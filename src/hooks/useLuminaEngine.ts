@@ -12,6 +12,11 @@ interface PIIRemovalOptions {
   outputFormat?: string
 }
 
+interface PrivacyGrainOptions {
+  outputFormat?: string
+  stripMetadata?: boolean
+}
+
 interface LuminaEngineState {
   isLoaded: boolean
   isProcessing: boolean
@@ -170,11 +175,76 @@ export function useLuminaEngine() {
     [sanitize]
   )
 
+  /**
+   * Applies subtle temporal grain to video for enhanced digital privacy.
+   *
+   * Adds a low-intensity noise filter that creates a unique binary signature
+   * for each processed file, preventing cross-platform hash tracking while
+   * maintaining high visual quality.
+   *
+   * FFmpeg filter used:
+   * - `noise=alls=3:allf=t+u`: Applies strength-3 temporal uniform noise to all planes
+   *   - alls=3: Low noise strength (scale 0-100) for minimal visual impact
+   *   - allf=t+u: Temporal (t) + uniform (u) distribution for natural grain appearance
+   *
+   * Also strips metadata by default for comprehensive privacy protection.
+   */
+  const applyPrivacyGrain = useCallback(
+    async (file: File, options: PrivacyGrainOptions = {}): Promise<Blob> => {
+      const { outputFormat, stripMetadata = true } = options
+
+      if (!ffmpegRef.current?.loaded) {
+        throw new Error('FFmpeg not loaded. Call load() first.')
+      }
+
+      const ffmpeg = ffmpegRef.current
+
+      setState((prev) => ({ ...prev, isProcessing: true, progress: 0, error: null }))
+
+      try {
+        const inputFileName = 'input' + getExtension(file.name)
+        const outputExt = outputFormat || getExtension(file.name)
+        const outputFileName = 'output' + outputExt
+
+        await ffmpeg.writeFile(inputFileName, await fetchFile(file))
+
+        const ffmpegArgs: string[] = ['-i', inputFileName]
+
+        if (stripMetadata) {
+          ffmpegArgs.push('-map_metadata', '-1')
+        }
+
+        ffmpegArgs.push('-vf', 'noise=alls=3:allf=t+u')
+        ffmpegArgs.push('-y', outputFileName)
+
+        await ffmpeg.exec(ffmpegArgs)
+
+        const data = await ffmpeg.readFile(outputFileName)
+        const mimeType = getMimeType(outputExt)
+        const uint8Array = data instanceof Uint8Array ? data : new TextEncoder().encode(data)
+        const blob = new Blob([new Uint8Array(uint8Array)], { type: mimeType })
+
+        await ffmpeg.deleteFile(inputFileName)
+        await ffmpeg.deleteFile(outputFileName)
+
+        setState((prev) => ({ ...prev, isProcessing: false, progress: 100 }))
+
+        return blob
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : 'Privacy grain failed'
+        setState((prev) => ({ ...prev, isProcessing: false, error: errorMessage }))
+        throw err
+      }
+    },
+    []
+  )
+
   return {
     load,
     sanitize,
     sanitizeForCI,
     removePII,
+    applyPrivacyGrain,
     isLoaded: state.isLoaded,
     isProcessing: state.isProcessing,
     progress: state.progress,
